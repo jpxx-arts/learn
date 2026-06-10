@@ -1,0 +1,613 @@
+#!/usr/bin/env python3
+"""learn — gerência determinística do estado pedagógico da skill `learn`.
+
+Princípio: o LLM decide o evento pedagógico; este CLI o registra com validação.
+O tutor nunca edita o JSON na mão, nunca soma XP, nunca incrementa contador.
+Fonte da verdade: learn/state/*.json. Leitura humana: `learn show` / `learn brief`
+renderizam na hora (nunca há markdown persistido que possa ficar stale).
+"""
+
+import argparse
+import json
+import os
+import subprocess
+import sys
+from datetime import date
+from pathlib import Path
+
+LEVEL_NAMES = {
+    1: "Novato", 2: "Iniciante", 3: "Iniciante Avançado", 4: "Aprendiz",
+    5: "Praticante", 6: "Competente", 7: "Proficiente",
+    8: "Especialista Júnior", 9: "Especialista", 10: "Mestre",
+}
+XP = {
+    "topic_touch": 10, "task_accept": 15, "teachback": 20,
+    "weakness_resolve": 25, "mastered": 30, "build_done": 50,
+}
+MAX_ACTIVE = 3
+TOPIC_STATUS = ["touched", "practiced", "teachback_ok", "mastered"]
+LIFECYCLE = ["active", "parked", "mastered"]
+RATINGS = ["red", "yellow", "green"]
+BLOOM = ["remember", "understand", "apply", "analyze", "evaluate", "create"]
+DREYFUS = ["novice", "advanced_beginner", "competent", "proficient", "expert"]
+
+# Sobrescrito por --date para replay de eventos históricos (ex.: migração).
+_TODAY_OVERRIDE = None
+
+FILES = {
+    "profile": {},
+    "curriculum": {"topics": {}},
+    "weaknesses": {"weaknesses": [], "next_id": 1},
+    "tasks": {"tasks": [], "next_id": 1},
+    "progress": {"levels": {}, "xp": {"total": 0}, "badges": []},
+}
+
+
+def today():
+    return _TODAY_OVERRIDE or date.today().isoformat()
+
+
+def die(msg):
+    print(f"erro: {msg}", file=sys.stderr)
+    sys.exit(1)
+
+
+def ok(msg):
+    print(msg)
+
+
+def _deep_merge(base, incoming):
+    """Funde `incoming` em `base` recursivamente (dicts aninhados são fundidos,
+    não substituídos) — permite updates parciais do profile sem perder campos."""
+    for k, v in incoming.items():
+        if isinstance(v, dict) and isinstance(base.get(k), dict):
+            _deep_merge(base[k], v)
+        else:
+            base[k] = v
+    return base
+
+
+class Store:
+    def __init__(self, root):
+        self.root = Path(root)
+        self.state = self.root / "state"
+        self.no_commit = False        # --no-commit
+        self.msg_override = None       # -m/--msg (descrição do commit)
+        self.scope_override = None     # --scope (scope do commit)
+
+    def _path(self, name):
+        return self.state / f"{name}.json"
+
+    def exists(self):
+        return self.state.is_dir()
+
+    def load(self, name):
+        p = self._path(name)
+        if not p.exists():
+            die(f"estado não inicializado em {self.root} — rode `learn init`")
+        return json.loads(p.read_text(encoding="utf-8"))
+
+    def save(self, name, data):
+        p = self._path(name)
+        tmp = p.with_suffix(".json.tmp")
+        tmp.write_text(json.dumps(data, indent=2, ensure_ascii=False), encoding="utf-8")
+        os.replace(tmp, p)  # rename atômico no POSIX
+
+    def append_session(self, line):
+        with (self.state / "sessions.jsonl").open("a", encoding="utf-8") as f:
+            f.write(json.dumps(line, ensure_ascii=False) + "\n")
+
+    def award(self, amount, reason):
+        prog = self.load("progress")
+        prog["xp"]["total"] += amount
+        self.save("progress", prog)
+        ok(f"  (+{amount} XP — {reason}; total: {prog['xp']['total']})")
+
+    def commit(self, default_scope, default_desc, ctype="docs"):
+        """Auto-commit de marco: stage só `state/`, mensagem convencionada
+        `<tipo>(<scope>): <descrição>`. Silencioso e sem efeito se: --no-commit,
+        não for repo git, git ausente, ou nada staged. Nunca bloqueia o evento."""
+        if self.no_commit:
+            return
+        scope = self.scope_override or default_scope
+        desc = self.msg_override or default_desc
+        root = str(self.root)
+        try:
+            inside = subprocess.run(
+                ["git", "-C", root, "rev-parse", "--is-inside-work-tree"],
+                capture_output=True, text=True)
+            if inside.returncode != 0 or inside.stdout.strip() != "true":
+                return
+            subprocess.run(["git", "-C", root, "add", "state"], capture_output=True)
+            if subprocess.run(["git", "-C", root, "diff", "--cached", "--quiet"]).returncode == 0:
+                return  # nada mudou no estado
+            msg = f"{ctype}({scope}): {desc}"
+            r = subprocess.run(["git", "-C", root, "commit", "-m", msg], capture_output=True)
+            if r.returncode == 0:
+                ok(f"  [git] {msg}")
+        except FileNotFoundError:
+            return  # git não instalado
+
+
+# ---------- estrutura / leitura ----------
+
+def cmd_init(store, args):
+    if store.exists():
+        ok(f"estado já existe em {store.root}")
+        return
+    store.state.mkdir(parents=True)
+    (store.root / "notes").mkdir(exist_ok=True)
+    for name, empty in FILES.items():
+        store.save(name, empty)
+    (store.state / "sessions.jsonl").touch()
+    prof = store.load("profile")
+    prof.setdefault("start_date", today())
+    store.save("profile", prof)
+    ok(f"estado inicializado em {store.root}/state — preencha o profile via entrevista.")
+
+
+def _active_topics(curr):
+    return [n for n, t in curr["topics"].items() if t.get("lifecycle") == "active"]
+
+
+def cmd_brief(store, args):
+    curr = store.load("curriculum")
+    weak = store.load("weaknesses")
+    tasks = store.load("tasks")
+    prog = store.load("progress")
+
+    ok("== BRIEFING DE SESSÃO ==")
+    submitted = [t for t in tasks["tasks"] if t["status"] == "submitted"]
+    if submitted:
+        ok("\n[PRIORIDADE 1] tasks submetidas aguardando correção:")
+        for t in submitted:
+            ok(f"  #{t['id']} {t['title']} (tópico: {t.get('topic','?')})")
+
+    due = [w for w in weak["weaknesses"]
+           if w["status"] == "open" and w["concepts_since_last_touch"] >= 5]
+    if due:
+        ok("\n[PRIORIDADE 2] weaknesses vencidas (espaçamento ≥5) — force revisita:")
+        for w in due:
+            ok(f"  #{w['id']} {w['name']} (contador: {w['concepts_since_last_touch']}, sev {w['severity']})")
+
+    active = _active_topics(curr)
+    ok(f"\nativos ({len(active)}/{MAX_ACTIVE}): {', '.join(active) or '—'}")
+    open_w = [w for w in weak["weaknesses"] if w["status"] == "open"]
+    ok(f"weaknesses abertas: {len(open_w)} | XP total: {prog['xp']['total']}")
+    if prog["levels"]:
+        ok("níveis: " + ", ".join(
+            f"{trk} {lv['n']} ({lv['name']})" for trk, lv in prog["levels"].items()))
+    badges = prog.get("badges", [])
+    if badges:
+        ok("\nmarcos (munição relacional — invoque quando rimar com o desafio de hoje):")
+        for b in badges[-6:]:
+            ok(f"  [{b['date']}] {b['name']}")
+
+
+def cmd_show(store, args):
+    name = args.section
+    if name == "all":
+        for n in ["profile", "curriculum", "weaknesses", "tasks", "progress"]:
+            ok(f"\n===== {n} =====")
+            ok(json.dumps(store.load(n), indent=2, ensure_ascii=False))
+    else:
+        ok(json.dumps(store.load(name), indent=2, ensure_ascii=False))
+
+
+def cmd_profile_set(store, args):
+    raw = sys.stdin.read()
+    try:
+        incoming = json.loads(raw)
+    except json.JSONDecodeError as e:
+        die(f"JSON inválido no stdin: {e}")
+    if not isinstance(incoming, dict):
+        die("profile deve ser um objeto JSON (recebido: outro tipo).")
+    prof = store.load("profile")
+    _deep_merge(prof, incoming)
+    prof.setdefault("start_date", today())
+    store.save("profile", prof)
+    ok("profile atualizado.")
+    store.commit("learn", "profile updated")
+
+
+# ---------- tópicos ----------
+
+def cmd_topic_touch(store, args):
+    curr = store.load("curriculum")
+    name = args.name
+    if name in curr["topics"]:
+        curr["topics"][name]["last_touched"] = today()
+        store.save("curriculum", curr)
+        ok(f"tópico '{name}' já existe — last_touched atualizado (revisita, sem XP novo).")
+        return
+    active = _active_topics(curr)
+    if len(active) >= MAX_ACTIVE:
+        die(f"cognitive load: já há {MAX_ACTIVE} tópicos ativos ({', '.join(active)}). "
+            f"Pare um com `learn topic park <nome>` antes de iniciar '{name}'.")
+    curr["topics"][name] = {
+        "status": "touched", "lifecycle": "active",
+        "bloom": "remember", "dreyfus": "novice",
+        "track": args.track, "depends_on": args.depends or [],
+        "unlocks": args.unlocks or [], "tutor_rating": "yellow",
+        "traps": [], "first_touched": today(), "last_touched": today(),
+    }
+    store.save("curriculum", curr)
+    ok(f"tópico '{name}' criado (track: {args.track}, ativo).")
+    store.award(XP["topic_touch"], f"tópico novo: {name}")
+
+    # espaçamento: incrementa o contador de TODAS as weaknesses abertas
+    weak = store.load("weaknesses")
+    kin = set([name] + (args.depends or []) + (args.unlocks or []))
+    bumped, due, related = 0, [], []
+    for w in weak["weaknesses"]:
+        if w["status"] != "open":
+            continue
+        w["concepts_since_last_touch"] += 1
+        bumped += 1
+        # afinidade = relação ESTRUTURAL (related_to cruza o tópico, seus
+        # pré-requisitos ou o que ele desbloqueia). "Mesma trilha" não conta:
+        # para um aluno mono-trilha, spammaria toda weakness em todo touch.
+        if set(w.get("related_to", [])) & kin:
+            related.append(w)
+        elif w["concepts_since_last_touch"] >= 5:
+            due.append(w)
+    store.save("weaknesses", weak)
+    if bumped:
+        ok(f"  espaçamento: +1 em {bumped} weakness(es) aberta(s).")
+    for w in related:
+        ok(f"  >> AFINIDADE com weakness #{w['id']} '{w['name']}' — faça surface antes de seguir.")
+    for w in due:
+        ok(f"  >> VENCIDA weakness #{w['id']} '{w['name']}' (≥5) — force revisita.")
+
+
+def _get_topic(store, name):
+    curr = store.load("curriculum")
+    if name not in curr["topics"]:
+        die(f"tópico '{name}' não existe.")
+    return curr, curr["topics"][name]
+
+
+def cmd_topic_status(store, args):
+    if args.value not in TOPIC_STATUS:
+        die(f"status inválido; use um de {TOPIC_STATUS}")
+    curr, t = _get_topic(store, args.name)
+    t["status"] = args.value
+    t["last_touched"] = today()
+    store.save("curriculum", curr)
+    ok(f"'{args.name}' status -> {args.value}")
+
+
+def cmd_topic_rate(store, args):
+    if args.value not in RATINGS:
+        die(f"rating inválido; use um de {RATINGS}")
+    curr, t = _get_topic(store, args.name)
+    t["tutor_rating"] = args.value
+    store.save("curriculum", curr)
+    ok(f"'{args.name}' tutor_rating -> {args.value}")
+
+
+def cmd_topic_park(store, args):
+    curr, t = _get_topic(store, args.name)
+    t["lifecycle"] = "parked"
+    store.save("curriculum", curr)
+    ok(f"'{args.name}' parqueado.")
+
+
+def cmd_topic_activate(store, args):
+    curr, t = _get_topic(store, args.name)
+    if t["lifecycle"] != "active":
+        active = _active_topics(curr)
+        if len(active) >= MAX_ACTIVE:
+            die(f"cognitive load: {MAX_ACTIVE} ativos ({', '.join(active)}). Parque um antes.")
+    t["lifecycle"] = "active"
+    t["last_touched"] = today()
+    store.save("curriculum", curr)
+    ok(f"'{args.name}' ativo.")
+
+
+def cmd_topic_teachback(store, args):
+    curr, t = _get_topic(store, args.name)
+    t["status"] = "teachback_ok"
+    t["last_touched"] = today()
+    store.save("curriculum", curr)
+    ok(f"'{args.name}' teach-back aceito.")
+    store.award(XP["teachback"], f"teach-back: {args.name}")
+
+
+def cmd_topic_mastered(store, args):
+    curr, t = _get_topic(store, args.name)
+    if t["status"] == "mastered":
+        ok(f"'{args.name}' já está mastered — nada a fazer.")
+        return
+    # gate: teach-back aceito + ao menos uma task aceita do tópico
+    if t["status"] != "teachback_ok" and not args.force:
+        die(f"gate: '{args.name}' precisa de teach-back aceito antes de mastered "
+            f"(status atual: {t['status']}). Use --force só se souber o que faz.")
+    tasks = store.load("tasks")
+    accepted = [x for x in tasks["tasks"]
+                if x.get("topic") == args.name and x["status"] == "accepted"]
+    if not accepted and not args.force:
+        die(f"gate: '{args.name}' precisa de ≥1 task aceita do tópico antes de mastered.")
+    t["status"] = "mastered"
+    t["lifecycle"] = "mastered"
+    t["last_touched"] = today()
+    store.save("curriculum", curr)
+    ok(f"'{args.name}' -> MASTERED.")
+    store.award(XP["mastered"], f"mastered: {args.name}")
+    ok(f"  >> reavalie o nível da trilha '{t['track']}' com `learn level set ... --because`")
+    store.commit(args.name, "topic mastered")
+
+
+def cmd_build_done(store, args):
+    _get_topic(store, args.name)
+    ok(f"implementação from-scratch de '{args.name}' concluída.")
+    store.award(XP["build_done"], f"from-scratch: {args.name}")
+    ok("  >> quase sempre dispara badge — considere `learn badge add`.")
+    store.commit(args.name, "from-scratch implementation done")
+
+
+def cmd_topic_bloom(store, args):
+    if args.level not in BLOOM:
+        die(f"bloom inválido; use um de {BLOOM}")
+    curr, t = _get_topic(store, args.name)
+    t["bloom"] = args.level
+    store.save("curriculum", curr)
+    ok(f"'{args.name}' bloom -> {args.level}")
+
+
+def cmd_topic_dreyfus(store, args):
+    if args.stage not in DREYFUS:
+        die(f"dreyfus inválido; use um de {DREYFUS}")
+    curr, t = _get_topic(store, args.name)
+    t["dreyfus"] = args.stage
+    store.save("curriculum", curr)
+    ok(f"'{args.name}' dreyfus -> {args.stage}")
+
+
+def cmd_topic_trap(store, args):
+    curr, t = _get_topic(store, args.name)
+    t.setdefault("traps", []).append(args.text)
+    store.save("curriculum", curr)
+    ok(f"'{args.name}' trap adicionada ({len(t['traps'])} no total).")
+
+
+# ---------- weaknesses ----------
+
+def cmd_weakness_add(store, args):
+    weak = store.load("weaknesses")
+    wid = weak["next_id"]
+    weak["weaknesses"].append({
+        "id": wid, "name": args.name, "first_seen": today(),
+        "severity": args.severity, "status": "open",
+        "concepts_since_last_touch": 0,
+        "related_to": args.related or [], "track": args.track,
+        "last_revisited": None, "notes": args.notes or "",
+    })
+    weak["next_id"] = wid + 1
+    store.save("weaknesses", weak)
+    ok(f"weakness #{wid} '{args.name}' registrada (sev {args.severity}).")
+    scope = (args.related or [None])[0] or args.track or "learn"
+    store.commit(scope, f"weakness #{wid} opened")
+
+
+def _get_weakness(weak, wid):
+    for w in weak["weaknesses"]:
+        if w["id"] == wid:
+            return w
+    die(f"weakness #{wid} não existe.")
+
+
+def cmd_weakness_resolve(store, args):
+    weak = store.load("weaknesses")
+    w = _get_weakness(weak, args.id)
+    w["status"] = "resolved"
+    w["last_revisited"] = today()
+    store.save("weaknesses", weak)
+    ok(f"weakness #{args.id} '{w['name']}' resolvida.")
+    store.award(XP["weakness_resolve"], f"weakness resolvida: {w['name']}")
+    scope = (w.get("related_to") or [None])[0] or w.get("track") or "learn"
+    store.commit(scope, f"weakness #{args.id} resolved")
+
+
+def cmd_weakness_touch(store, args):
+    weak = store.load("weaknesses")
+    w = _get_weakness(weak, args.id)
+    w["concepts_since_last_touch"] = 0
+    w["last_revisited"] = today()
+    store.save("weaknesses", weak)
+    ok(f"weakness #{args.id} revisitada (contador zerado, ainda aberta).")
+
+
+# ---------- tasks ----------
+
+def cmd_task_add(store, args):
+    tasks = store.load("tasks")
+    tid = tasks["next_id"]
+    tasks["tasks"].append({
+        "id": tid, "title": args.title, "type": args.type,
+        "topic": args.topic, "assigned": today(), "status": "pending",
+        "description": args.desc or "", "feedback": "",
+    })
+    tasks["next_id"] = tid + 1
+    store.save("tasks", tasks)
+    ok(f"task #{tid} '{args.title}' atribuída ({args.type}, pendente).")
+
+
+def _get_task(tasks, tid):
+    for t in tasks["tasks"]:
+        if t["id"] == tid:
+            return t
+    die(f"task #{tid} não existe.")
+
+
+def cmd_task_submit(store, args):
+    tasks = store.load("tasks")
+    t = _get_task(tasks, args.id)
+    t["status"] = "submitted"
+    store.save("tasks", tasks)
+    ok(f"task #{args.id} submetida — corrija nesta conversa (feedback imediato).")
+
+
+def cmd_task_accept(store, args):
+    tasks = store.load("tasks")
+    t = _get_task(tasks, args.id)
+    t["status"] = "accepted"
+    if args.feedback:
+        t["feedback"] = args.feedback
+    store.save("tasks", tasks)
+    ok(f"task #{args.id} '{t['title']}' aceita.")
+    store.award(XP["task_accept"], f"task aceita: {t['title']}")
+    store.commit(t.get("topic") or "learn", f"task #{args.id} accepted")
+
+
+def cmd_task_reject(store, args):
+    tasks = store.load("tasks")
+    t = _get_task(tasks, args.id)
+    t["status"] = "pending"  # doutrina: rejeitada volta para pending com feedback
+    t["feedback"] = args.feedback
+    store.save("tasks", tasks)
+    ok(f"task #{args.id} rejeitada — feedback gravado, volta para pendente.")
+    store.commit(t.get("topic") or "learn", f"task #{args.id} rejected")
+
+
+# ---------- progresso ----------
+
+def cmd_level_set(store, args):
+    if args.n not in LEVEL_NAMES:
+        die("nível deve ser 1..10")
+    prog = store.load("progress")
+    prog["levels"][args.track] = {
+        "n": args.n, "name": LEVEL_NAMES[args.n],
+        "because": args.because, "updated": today(),
+    }
+    store.save("progress", prog)
+    ok(f"nível de '{args.track}' -> {args.n} ({LEVEL_NAMES[args.n]}).")
+    ok(f"  evidência: {args.because}")
+    store.commit("learn", f"level {args.track} -> {args.n}")
+
+
+def cmd_badge_add(store, args):
+    prog = store.load("progress")
+    prog["badges"].append({"date": today(), "name": args.name, "xp": args.xp})
+    prog["xp"]["total"] += args.xp
+    store.save("progress", prog)
+    ok(f"badge concedida: '{args.name}' (+{args.xp} XP; total: {prog['xp']['total']}).")
+    store.commit("learn", f"badge: {args.name}")
+
+
+def cmd_recap(store, args):
+    store.append_session({
+        "date": today(), "clear": args.clear,
+        "foggy": args.foggy, "surprise": args.surprise,
+    })
+    ok("recap registrado em sessions.jsonl.")
+
+
+# ---------- wiring ----------
+
+def _add_commit_args(p):
+    """Args de commit para verbos de marco: descrição e scope opcionais."""
+    p.add_argument("-m", "--msg", help="descrição do commit (senão usa template)")
+    p.add_argument("--scope", help="scope do commit (senão inferido)")
+
+
+def build_parser():
+    p = argparse.ArgumentParser(prog="learn")
+    p.add_argument("--root", default="learn", help="diretório de estado (default: ./learn)")
+    p.add_argument("--date", help="YYYY-MM-DD; sobrescreve a data dos timestamps (replay histórico)")
+    p.add_argument("--no-commit", action="store_true", help="não fazer auto-commit git")
+    sub = p.add_subparsers(dest="cmd", required=True)
+
+    sub.add_parser("init").set_defaults(fn=cmd_init)
+    sub.add_parser("brief").set_defaults(fn=cmd_brief)
+    sp = sub.add_parser("show")
+    sp.add_argument("section", nargs="?", default="all",
+                    choices=["all", "profile", "curriculum", "weaknesses", "tasks", "progress"])
+    sp.set_defaults(fn=cmd_show)
+
+    # profile (escrita via JSON no stdin — ex.: `echo '{...}' | learn profile set`)
+    a = sub.add_parser("profile").add_subparsers(dest="action", required=True).add_parser("set")
+    a.set_defaults(fn=cmd_profile_set); _add_commit_args(a)
+
+    # topic
+    pt = sub.add_parser("topic").add_subparsers(dest="action", required=True)
+    a = pt.add_parser("touch"); a.add_argument("name")
+    a.add_argument("--track", required=True)
+    a.add_argument("--depends", type=lambda s: s.split(","))
+    a.add_argument("--unlocks", type=lambda s: s.split(","))
+    a.set_defaults(fn=cmd_topic_touch)
+    a = pt.add_parser("status"); a.add_argument("name"); a.add_argument("value")
+    a.set_defaults(fn=cmd_topic_status)
+    a = pt.add_parser("rate"); a.add_argument("name"); a.add_argument("value")
+    a.set_defaults(fn=cmd_topic_rate)
+    a = pt.add_parser("park"); a.add_argument("name"); a.set_defaults(fn=cmd_topic_park)
+    a = pt.add_parser("activate"); a.add_argument("name"); a.set_defaults(fn=cmd_topic_activate)
+    a = pt.add_parser("teachback"); a.add_argument("name"); a.set_defaults(fn=cmd_topic_teachback)
+    a = pt.add_parser("mastered"); a.add_argument("name")
+    a.add_argument("--force", action="store_true"); a.set_defaults(fn=cmd_topic_mastered)
+    _add_commit_args(a)
+    a = pt.add_parser("build-done"); a.add_argument("name"); a.set_defaults(fn=cmd_build_done)
+    _add_commit_args(a)
+    a = pt.add_parser("bloom"); a.add_argument("name"); a.add_argument("level")
+    a.set_defaults(fn=cmd_topic_bloom)
+    a = pt.add_parser("dreyfus"); a.add_argument("name"); a.add_argument("stage")
+    a.set_defaults(fn=cmd_topic_dreyfus)
+    a = pt.add_parser("trap"); a.add_argument("name"); a.add_argument("text")
+    a.set_defaults(fn=cmd_topic_trap)
+
+    # weakness
+    pw = sub.add_parser("weakness").add_subparsers(dest="action", required=True)
+    a = pw.add_parser("add"); a.add_argument("--name", required=True)
+    a.add_argument("--severity", type=int, default=2, choices=[1, 2, 3])
+    a.add_argument("--related", type=lambda s: s.split(","))
+    a.add_argument("--track"); a.add_argument("--notes")
+    a.set_defaults(fn=cmd_weakness_add); _add_commit_args(a)
+    a = pw.add_parser("resolve"); a.add_argument("id", type=int)
+    a.set_defaults(fn=cmd_weakness_resolve); _add_commit_args(a)
+    a = pw.add_parser("touch"); a.add_argument("id", type=int); a.set_defaults(fn=cmd_weakness_touch)
+
+    # task
+    pk = sub.add_parser("task").add_subparsers(dest="action", required=True)
+    a = pk.add_parser("add"); a.add_argument("--title", required=True)
+    a.add_argument("--type", required=True, choices=["exercise", "read", "build"])
+    a.add_argument("--topic", required=True); a.add_argument("--desc")
+    a.set_defaults(fn=cmd_task_add)
+    a = pk.add_parser("submit"); a.add_argument("id", type=int); a.set_defaults(fn=cmd_task_submit)
+    a = pk.add_parser("accept"); a.add_argument("id", type=int)
+    a.add_argument("--feedback"); a.set_defaults(fn=cmd_task_accept); _add_commit_args(a)
+    a = pk.add_parser("reject"); a.add_argument("id", type=int)
+    a.add_argument("--feedback", required=True); a.set_defaults(fn=cmd_task_reject); _add_commit_args(a)
+
+    # level / badge / recap
+    a = sub.add_parser("level").add_subparsers(dest="action", required=True).add_parser("set")
+    a.add_argument("track"); a.add_argument("n", type=int)
+    a.add_argument("--because", required=True, help="evidência — obrigatória; nível não é número")
+    a.set_defaults(fn=cmd_level_set); _add_commit_args(a)
+    a = sub.add_parser("badge").add_subparsers(dest="action", required=True).add_parser("add")
+    a.add_argument("--name", required=True); a.add_argument("--xp", type=int, required=True)
+    a.set_defaults(fn=cmd_badge_add); _add_commit_args(a)
+    a = sub.add_parser("recap")
+    a.add_argument("--clear", default=""); a.add_argument("--foggy", default="")
+    a.add_argument("--surprise", default=""); a.set_defaults(fn=cmd_recap)
+
+    return p
+
+
+def main():
+    args = build_parser().parse_args()
+    global _TODAY_OVERRIDE
+    if getattr(args, "date", None):
+        try:
+            date.fromisoformat(args.date)
+        except ValueError:
+            die("--date deve ser YYYY-MM-DD")
+        _TODAY_OVERRIDE = args.date
+    store = Store(args.root)
+    store.no_commit = getattr(args, "no_commit", False)
+    store.msg_override = getattr(args, "msg", None)
+    store.scope_override = getattr(args, "scope", None)
+    args.fn(store, args)
+
+
+if __name__ == "__main__":
+    main()

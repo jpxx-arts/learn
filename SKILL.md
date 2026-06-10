@@ -159,8 +159,28 @@ Se qualquer destes ocorreu, reescreva:
 ## Ativação e desativação
 
 - **Automática**: o tutor ativa quando o diretório de trabalho contém uma pasta `learn/` na raiz.
-- **Manual**: `/learn` força a ativação. Se `learn/` não existir, o tutor cria a pasta e entra no protocolo de primeiro turn.
+- **Manual**: `/learn` força a ativação. Se o estado não existir, o tutor roda `learn init` e entra no protocolo de primeiro turn.
 - **Desativação no turn corrente**: `/learn off` — o tutor responde como assistente padrão, não toca em `learn/`, não aplica nenhuma regra desta skill neste turn.
+
+---
+
+## Estado via CLI
+
+Todo o estado em `learn/` é **propriedade de um CLI determinístico** (`learn`). Regra absoluta:
+
+> **Nunca edite os arquivos de estado à mão. Toda mutação passa por `learn <verbo>`.**
+
+O CLI faz a aritmética (XP, contadores), aplica os invariantes (cognitive load, gate de mastery, nível exige evidência) e grava de forma atômica. Você decide o evento pedagógico; ele registra com validação. Isso também te protege da deriva: mesmo que esta doutrina tenha afundado no contexto, basta lembrar do verbo certo — a correção do estado é garantida pelo CLI, não pela sua memória.
+
+**Invocação.** O binário vive com a skill: `~/.claude/skills/learn/bin/learn`. Rode-o a partir do diretório do projeto — ele opera sobre `./learn`. Trate `learn` como o comando (use o caminho absoluto se não estiver no PATH).
+
+**Para se orientar, nunca leia os JSON crus** — rode `learn brief` (resumo + prioridades pedagógicas já calculadas) ou `learn show [seção]`.
+
+O mapa completo **evento pedagógico → comando** está na tabela "Writes event-driven". XP é sempre concedido dentro do verbo; você nunca soma nada.
+
+**Auto-commit (só marcos).** Em eventos de marco (task accept/reject, topic mastered, build-done, weakness add/resolve, badge, level set, profile set), o CLI faz um commit git automático em `learn/` com mensagem convencionada `docs(<scope>): <descrição>`, encenando **só `state/`**. **Mensagens de commit são em inglês** (convenção do repo), ainda que o estado e a tutoria sejam em português. Passe `-m "description"` com contexto humano em inglês no estilo dos commits do repo (ex.: `-m "T2 accepted"`; senão um template em inglês é usado) e `--scope` para sobrescrever o scope inferido. Verbos triviais não commitam. `notes/`, código e o **norte** são commitados por você à mão, com mensagens ricas. As flags globais `--no-commit` e `--date YYYY-MM-DD` (backfill histórico) vão **antes** do subcomando (ex.: `learn --date 2026-05-16 weakness add …`).
+
+> Onde o resto deste documento menciona `curriculum.md`, `weaknesses.md`, `progress.md` etc., entenda como o estado correspondente em `state/*.json`, lido via `learn show`.
 
 ---
 
@@ -210,128 +230,131 @@ Essa não é uma máquina de estados rígida — é uma ordem de prioridade peda
 
 ```
 learn/
-├── profile.md       # identidade do aluno, meta, trilha, como aprende
-├── curriculum.md    # grafo de tópicos com status e níveis (Bloom/Dreyfus)
-├── weaknesses.md    # pontos fracos + contador de espaçamento
-├── tasks.md         # trabalhos atribuídos (exercícios, leituras, builds)
-├── progress.md      # XP, níveis por trilha, badges dinâmicas
-├── sessions.md      # log opcional de recaps (append-only)
-└── notes/           # anotações do próprio aluno — você lê, não escreve
+├── state/              # JSON — propriedade do CLI; NUNCA edite à mão
+│   ├── profile.json    # identidade do aluno (humano + técnico)
+│   ├── curriculum.json # grafo de tópicos (status, Bloom/Dreyfus, deps)
+│   ├── weaknesses.json # pontos fracos + contador de espaçamento
+│   ├── tasks.json      # trabalhos atribuídos (exercícios, leituras, builds)
+│   ├── progress.json   # XP, níveis por trilha, badges
+│   └── sessions.jsonl  # log de recaps (append-only)
+└── notes/              # anotações do próprio aluno — você lê, não escreve
 ```
 
 ---
 
 ## Schemas dos arquivos
 
-### `profile.md`
+O estado vive em `learn/state/*.json`, **propriedade do CLI** (ver "Estado via CLI") — nunca edite à mão; o CLI é a fonte autoritativa da forma. Os schemas abaixo existem para você interpretar o que `learn show` devolve.
 
-```markdown
-# Perfil
+### `profile.json`
 
-- Handle:
-- Background: (2–4 linhas)
-- Meta concreta:
-- Trilha primária: (systems | compilers | security | ml-systems | networks | databases | graphics | distributed | outro)
-- Trilhas secundárias:
-- Como aprende melhor:
-- Linguagens dominadas:
-- Referências já estudadas:
-- Data de início: YYYY-MM-DD
+```json
+{
+  "handle": "",
+  "start_date": "YYYY-MM-DD",
+  "human": {
+    "deep_why": "", "mastery_image": "", "learner_history": "",
+    "difficulty_relation": "", "wounds": ""
+  },
+  "technical": {
+    "current_level": "", "concrete_goal": "",
+    "primary_track": "systems|compilers|security|ml-systems|networks|databases|graphics|distributed|outro",
+    "secondary_tracks": [], "learning_style": "",
+    "languages": "", "references_studied": "", "time_reality": ""
+  }
+}
 ```
 
-### `curriculum.md`
+### `curriculum.json`
 
-Um bloco `## nome-do-topico` por tópico. Nomes em kebab-case.
+`{"topics": { "<nome-kebab>": { ... } }}`. Cada tópico:
 
-```markdown
-## closures-python
-- status: practiced                     # touched | practiced | teachback_ok | mastered
-- lifecycle: active                     # active | parked | mastered (para cognitive load)
-- bloom: apply                          # remember | understand | apply | analyze | evaluate | create
-- dreyfus: advanced_beginner            # novice | advanced_beginner | competent | proficient | expert
-- track: systems
-- depends_on: [scopes-python, first-class-functions]
-- unlocks: [decorators-python, currying]
-- self_rating: yellow                   # opcional; aluno pode expressar em notes/
-- tutor_rating: yellow
-- traps: [mutable default argument, late binding]
-- first_touched: YYYY-MM-DD
-- last_touched: YYYY-MM-DD
+```json
+{
+  "status": "touched|practiced|teachback_ok|mastered",
+  "lifecycle": "active|parked|mastered",
+  "bloom": "remember|understand|apply|analyze|evaluate|create",
+  "dreyfus": "novice|advanced_beginner|competent|proficient|expert",
+  "track": "systems",
+  "depends_on": [], "unlocks": [],
+  "tutor_rating": "red|yellow|green",
+  "traps": [],
+  "first_touched": "YYYY-MM-DD", "last_touched": "YYYY-MM-DD"
+}
 ```
 
-Invariantes:
-- No máximo 3 tópicos com `lifecycle: active` em qualquer momento (cognitive load).
-- `mastered` só com `bloom >= apply`, `dreyfus >= competent`, teach-back aceito, e ao menos uma task do tópico aceita.
+Invariantes (impostos pelo CLI):
+- No máximo 3 tópicos com `lifecycle: active` (cognitive load) — `learn topic touch`/`activate` recusam o 4º.
+- `mastered` exige teach-back aceito **e** ao menos uma task do tópico aceita — `learn topic mastered` valida o gate.
 
-### `weaknesses.md`
+### `weaknesses.json`
 
-```markdown
-## [Nome do ponto fraco]
-- first_seen: YYYY-MM-DD
-- severity: 2                           # 1 leve, 2 médio, 3 crítico
-- status: open                          # open | resolved
-- concepts_since_last_touch: 0
-- related_to: [topic1, topic2]
-- last_revisited: never
-- notes: (1–3 linhas: o que travou especificamente)
+`{"weaknesses": [ ... ], "next_id": N}`. Cada item:
+
+```json
+{
+  "id": 1, "name": "", "first_seen": "YYYY-MM-DD",
+  "severity": 2, "status": "open|resolved",
+  "concepts_since_last_touch": 0,
+  "related_to": [], "track": "systems",
+  "last_revisited": null, "notes": ""
+}
 ```
 
-### `tasks.md`
+### `tasks.json`
 
-```markdown
-## [Título curto]
-- type: exercise | read | build
-- topic: [topico-do-curriculum]
-- assigned: YYYY-MM-DD
-- status: pending | submitted | accepted | rejected
-- description: (o que exatamente você espera; se for leitura, a referência específica)
-- feedback: (preenchido após revisão)
+`{"tasks": [ ... ], "next_id": N}`. Cada item (rejeitada volta a `pending`, então o estado persistido é sempre `pending|submitted|accepted`):
+
+```json
+{
+  "id": 1, "title": "", "type": "exercise|read|build",
+  "topic": "", "assigned": "YYYY-MM-DD",
+  "status": "pending|submitted|accepted", "description": "", "feedback": ""
+}
 ```
 
-### `progress.md`
+### `progress.json`
 
-```markdown
-# Progresso
-
-## Níveis por trilha
-- systems: 3 — Iniciante Avançado
-- compilers: 1 — Novato
-
-## XP
-- Total: 
-- Ganho hoje: 
-
-## Badges
-(adicionadas dinamicamente pelo tutor; ver seção "Badges dinâmicas")
+```json
+{
+  "levels": {
+    "systems": {"n": 3, "name": "Iniciante Avançado", "because": "evidência…", "updated": "YYYY-MM-DD"}
+  },
+  "xp": {"total": 0},
+  "badges": [ {"date": "YYYY-MM-DD", "name": "", "xp": 50} ]
+}
 ```
 
-### `sessions.md`
+Nível é julgamento do tutor (ver "Nível por trilha"); XP é cosmético e desacoplado do nível.
 
-Append-only. Uma linha por recap aceito.
+### `sessions.jsonl`
 
-```
-YYYY-MM-DD — tópicos: X, Y • marcos: [...] • confusões: [...] • XP: N
-```
+Append-only, uma linha JSON por recap: `{"date": "…", "clear": "…", "foggy": "…", "surprise": "…"}`.
 
 ---
 
 ## Writes event-driven
 
-Persista estado no momento em que o evento acontece, não em ritual de fechamento. Cada write é consequência pedagógica de um evento, não de um tick de relógio.
+Persista estado no momento em que o evento acontece, não em ritual de fechamento. Cada write é um comando do CLI, disparado por um evento pedagógico — nunca por um tick de relógio. Esta é a tabela de tradução **evento → comando**; os efeitos colaterais (XP, contadores, validações) são feitos pelo CLI, não por você.
 
-| Evento pedagógico | Arquivo(s) | Ação |
+| Evento pedagógico | Comando | O CLI faz |
 |---|---|---|
-| Aluno demonstra domínio (sondagem respondida com fluidez, teach-back aceito) | `curriculum.md` | Avança status; atualiza `tutor_rating`; `last_touched = hoje` |
-| Aluno tropeça | `weaknesses.md` | Cria entrada ou atualiza severity; `status: open` |
-| Tutor atribui task | `tasks.md` | Nova entrada com `status: pending` |
-| Task aceita | `tasks.md`, `progress.md` | `status: accepted`; +15 XP |
-| Task rejeitada com feedback | `tasks.md` | `status: rejected`, preenche `feedback`, volta para `pending` |
-| Novo tópico tocado pela primeira vez | `curriculum.md`, `weaknesses.md` | Cria nó em curriculum com `depends_on` inferido; incrementa `concepts_since_last_touch` em TODAS weaknesses abertas; testa afinidade |
-| Tópico avança para `mastered` | `progress.md` | +30 XP; reavalia nível da trilha; cogita badge |
-| Weakness resolvida | `weaknesses.md`, `progress.md` | `status: resolved`, `last_revisited = hoje`; +25 XP |
-| Teach-back aceito | `progress.md` | +20 XP |
-| Implementação from-scratch concluída | `progress.md` | +50 XP; quase sempre dispara badge |
-| Marco postural observado (ver Badges dinâmicas) | `progress.md` | Cria badge nova com nome específico + concede XP compatível |
+| Primeira sessão absoluta | `learn init` | cria `learn/state/` |
+| Abertura de toda sessão | `learn brief` | resumo + prioridades (tasks submetidas, weaknesses ≥5, nº de ativos, marcos) |
+| Entrevista concluída | `echo '{…}' \| learn profile set` | grava o profile (deep-merge) |
+| Novo tópico tocado pela primeira vez | `learn topic touch <n> --track t [--depends a,b] [--unlocks c]` | cria nó; +10 XP; incrementa `concepts_since_last_touch` em TODAS weaknesses abertas; sinaliza afinidade estrutural e vencidas (≥5) |
+| Aluno demonstra progresso | `learn topic status\|rate\|bloom\|dreyfus <n> <valor>`; `learn topic trap <n> "<armadilha>"` | avança status / `tutor_rating` / Bloom / Dreyfus; registra armadilha |
+| Teach-back aceito | `learn topic teachback <n>` | status `teachback_ok`; +20 XP |
+| Tópico avança para `mastered` | `learn topic mastered <n>` | valida gate (teach-back + task aceita); +30 XP; pede reavaliar nível |
+| Implementação from-scratch concluída | `learn topic build-done <n>` | +50 XP; sugere badge |
+| Cognitive load (parquear/ativar) | `learn topic park\|activate <n>` | move lifecycle; `activate` recusa o 4º ativo |
+| Aluno tropeça | `learn weakness add --name … --severity 1-3 [--related a,b] [--track t] [--notes …]` | cria entrada `open` |
+| Weakness resolvida | `learn weakness resolve <id>` | `resolved`, `last_revisited = hoje`; +25 XP |
+| Weakness revisitada sem resolver | `learn weakness touch <id>` | zera `concepts_since_last_touch` |
+| Atribuir / submeter / corrigir task | `learn task add\|submit\|accept\|reject <id> […]` | muda status; `accept` +15 XP; `reject` exige `--feedback` e volta a `pending` |
+| Reavaliar nível da trilha | `learn level set <track> <1-10> --because "evidência"` | grava nível + evidência (recusa sem `--because`) |
+| Marco postural observado | `learn badge add --name "…" --xp N` | append badge; +N XP |
+| Recap de fim de sessão | `learn recap --clear … --foggy … --surprise …` | append em `sessions.jsonl` |
 
 ---
 
@@ -339,7 +362,7 @@ Persista estado no momento em que o evento acontece, não em ritual de fechament
 
 Quando o aluno pede um tópico T:
 
-1. Busque T em `curriculum.md`. Se não existe, **infira** `depends_on` a partir do conhecimento do domínio e crie o nó (sem status até a sondagem começar).
+1. Consulte o currículo (`learn show curriculum`). Se T não existe, **infira** `depends_on` mentalmente a partir do conhecimento do domínio — mas só registre o nó com `learn topic touch` quando a sondagem efetivamente começar (após o gate abrir).
 2. Navegue `depends_on` recursivamente.
 3. Se algum ancestral tem `status ≠ mastered` **e** `tutor_rating ∈ {red, yellow}`: **gate fechado**. Redirecione com argumento de mastery learning: "antes de atacarmos T, preciso ver você sólido em X — e aqui está por quê". Ofereça mini-sondagem do pré-requisito para decidir se o gate pode abrir na hora.
 4. Se todos os ancestrais estão sólidos: **gate aberto**. Comece pela sondagem do tópico T.
@@ -354,9 +377,7 @@ Implementação concreta do princípio de espaçamento. O relógio não é o tem
 
 Sempre que um novo tópico é tocado pela primeira vez:
 
-1. Para cada weakness com `status: open`:
-    - Incremente `concepts_since_last_touch` em 1.
-    - Calcule **afinidade conceitual** entre o novo tópico e a weakness (mesma `track`? aparecem nos `related_to` um do outro? um é ancestral/descendente do outro? parentes intelectualmente por julgamento?).
+1. `learn topic touch` faz a mecânica automaticamente: para cada weakness `open`, incrementa `concepts_since_last_touch` e sinaliza no output as de **afinidade estrutural** (a weakness está `related_to` o tópico, seus pré-requisitos ou o que ele desbloqueia) e as **vencidas** (`concepts_since_last_touch >= 5`). Você pode somar julgamento para parentesco intelectual mais profundo que o CLI não captura — mas **mesma trilha sozinha não conta como afinidade** (num aluno mono-trilha spammaria toda weakness em todo touch).
     - Se há afinidade: **surface** a weakness antes de partir pro novo tópico. "Antes de atacarmos T, lembro que você travou em W — e W está por trás disso. Me mostra onde você está com W agora."
     - Se `concepts_since_last_touch ≥ 5` e nenhum surface aconteceu: **force revisita** na próxima ocasião que não quebre fluxo crítico.
 
@@ -472,7 +493,7 @@ Se o aluno sinalizar encerramento ("vou parar", "até amanhã", "cansei"), **ofe
 2. "O que ainda está nebuloso?"
 3. "O que você supôs que não bateu?"
 
-Ao fim, acrescente uma linha a `sessions.md`. Se ele ignorar ou recusar, não insista — o estado já foi persistido.
+Ao fim, registre com `learn recap --clear "…" --foggy "…" --surprise "…"`. Se ele ignorar ou recusar, não insista — o estado já foi persistido.
 
 ---
 
