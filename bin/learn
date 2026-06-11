@@ -194,6 +194,97 @@ def cmd_show(store, args):
         ok(json.dumps(store.load(name), indent=2, ensure_ascii=False))
 
 
+# ---------- board (visão humana, legível — substitui ler JSON cru) ----------
+
+_ANSI = {"b": "1", "dim": "2", "red": "31", "grn": "32", "ylw": "33",
+         "cyn": "36", "gry": "90"}
+TOPIC_GLYPH = {"touched": "○", "practiced": "◔", "teachback_ok": "◑", "mastered": "●"}
+TASK_GLYPH = {"pending": "○", "submitted": "▶", "accepted": "✓"}
+
+
+def _styler(enabled):
+    """Devolve uma função de estilização; no-op se cor desabilitada (não-tty/--plain)."""
+    def s(text, *styles):
+        if not enabled or not styles:
+            return text
+        seq = ";".join(_ANSI[x] for x in styles)
+        return f"\033[{seq}m{text}\033[0m"
+    return s
+
+
+def cmd_board(store, args):
+    """Painel legível do estado: cabeçalho (nível/XP), tópicos ativos, tarefas,
+    pontos fracos e marcos. Read-only; o aluno nunca precisa abrir os JSON."""
+    color = (not getattr(args, "plain", False)) and sys.stdout.isatty()
+    s = _styler(color)
+    prof = store.load("profile")
+    curr = store.load("curriculum")
+    weak = store.load("weaknesses")
+    tasks = store.load("tasks")
+    prog = store.load("progress")
+
+    domain = store.root.name
+    handle = prof.get("handle") or "—"
+    track = (prof.get("technical") or {}).get("primary_track") or "—"
+
+    # cabeçalho
+    levels = prog.get("levels", {})
+    lvl_str = "  ".join(f"{trk} {lv['n']} ({lv['name']})" for trk, lv in levels.items()) \
+        or "sem nível avaliado"
+    xp = prog.get("xp", {}).get("total", 0)
+    ok(s(f"  LEARN · {domain}", "b", "cyn") + s(f"   {handle} · trilha {track}", "dim"))
+    ok(s(f"  {lvl_str}   ·   {xp} XP", "gry"))
+
+    # tópicos
+    topics = curr.get("topics", {})
+    active = [(n, t) for n, t in topics.items() if t.get("lifecycle") == "active"]
+    rest = [(n, t) for n, t in topics.items() if t.get("lifecycle") != "active"]
+    ok("\n" + s(f"  TÓPICOS ATIVOS ({len(active)}/{MAX_ACTIVE})", "b"))
+    if not active:
+        ok(s("    — nenhum", "dim"))
+    for n, t in active:
+        g = TOPIC_GLYPH.get(t.get("status"), "○")
+        rc = {"green": "grn", "yellow": "ylw", "red": "red"}.get(t.get("tutor_rating"), "dim")
+        ok(f"    {s(g, rc)} {n:<28} {s(t.get('status',''), 'dim')}  "
+           f"{s('bloom', 'dim')} {t.get('bloom','')}  {s('dreyfus', 'dim')} {t.get('dreyfus','')}")
+    if rest:
+        mast = sum(1 for _, t in rest if t.get("status") == "mastered")
+        parked = sum(1 for _, t in rest if t.get("lifecycle") == "parked")
+        ok(s(f"    +{mast} dominado(s), {parked} parqueado(s) — `learn show curriculum` p/ tudo", "dim"))
+
+    # tarefas
+    ts = tasks.get("tasks", [])
+    ok("\n" + s("  TAREFAS", "b"))
+    if not ts:
+        ok(s("    — nenhuma", "dim"))
+    for t in ts:
+        g = TASK_GLYPH.get(t["status"], "○")
+        gc = {"pending": "ylw", "submitted": "cyn", "accepted": "grn"}.get(t["status"], "dim")
+        note = s("  ← aguardando correção", "cyn") if t["status"] == "submitted" else ""
+        ok(f"    {s(g, gc)} #{t['id']:<3} {t['title']:<32} {s('('+t['type']+')', 'dim')}{note}")
+
+    # pontos fracos — mais vencidos/severos primeiro
+    ws = [w for w in weak.get("weaknesses", []) if w["status"] == "open"]
+    ws.sort(key=lambda w: (-w["concepts_since_last_touch"], -w["severity"]))
+    ok("\n" + s(f"  PONTOS FRACOS ({len(ws)} aberto(s))", "b"))
+    if not ws:
+        ok(s("    — nenhum", "dim"))
+    for w in ws:
+        c = w["concepts_since_last_touch"]
+        due = c >= 5
+        ctr = f"{c} conceito(s) sem revisar" + (" ⚠ vencida" if due else "")
+        ok(f"    {s('!' * w['severity'], 'red' if due else 'ylw')} "
+           f"#{w['id']:<3} {w['name']:<30} {s(ctr, 'red' if due else 'dim')}")
+
+    # marcos
+    badges = prog.get("badges", [])
+    if badges:
+        ok("\n" + s("  MARCOS", "b"))
+        for b in badges[-5:]:
+            ok(f"    {s('★', 'ylw')} {b['name']}  {s(b['date'], 'dim')}")
+    ok("")
+
+
 def cmd_profile_set(store, args):
     raw = sys.stdin.read()
     try:
@@ -520,6 +611,9 @@ def build_parser():
 
     sub.add_parser("init").set_defaults(fn=cmd_init)
     sub.add_parser("brief").set_defaults(fn=cmd_brief)
+    a = sub.add_parser("board")
+    a.add_argument("--plain", action="store_true", help="sem cor/ANSI")
+    a.set_defaults(fn=cmd_board)
     sp = sub.add_parser("show")
     sp.add_argument("section", nargs="?", default="all",
                     choices=["all", "profile", "curriculum", "weaknesses", "tasks", "progress"])

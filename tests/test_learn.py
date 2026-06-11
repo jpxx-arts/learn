@@ -491,6 +491,53 @@ class TestParserEnforcement(unittest.TestCase):
     def test_subcommand_required(self):
         self.assertEqual(self._fails([]), 2)
 
+    def test_board_parser_accepts_plain(self):
+        ns = learn.build_parser().parse_args(["board", "--plain"])
+        self.assertTrue(ns.plain)
+
+
+class Board(Base):
+    def board(self):
+        return self.call(learn.cmd_board, plain=True)
+
+    def test_renders_fresh_state(self):
+        out = self.board()
+        for header in ["LEARN", "TÓPICOS ATIVOS", "TAREFAS", "PONTOS FRACOS"]:
+            self.assertIn(header, out)
+        self.assertIn("sem nível avaliado", out)
+
+    def test_no_ansi_when_plain(self):
+        self.touch("x")
+        self.assertNotIn("\033[", self.board())
+
+    def test_shows_topics_and_active_count(self):
+        self.touch("virtual-memory")
+        out = self.board()
+        self.assertIn("virtual-memory", out)
+        self.assertIn("(1/3)", out)
+
+    def test_shows_task_with_submitted_note(self):
+        self.call(learn.cmd_task_add, title="Ler TLPI", type="read", topic="vm", desc="")
+        self.call(learn.cmd_task_submit, id=1)
+        out = self.board()
+        self.assertIn("Ler TLPI", out)
+        self.assertIn("aguardando correção", out)
+
+    def test_flags_overdue_weakness(self):
+        self.add_weakness(name="ponteiros", severity=3)
+        for i in range(5):  # 5 tópicos novos => contador de espaçamento chega a 5
+            self.touch(f"t{i}")
+            self.call(learn.cmd_topic_park, name=f"t{i}")  # parqueia p/ não estourar cognitive load
+        out = self.board()
+        self.assertIn("ponteiros", out)
+        self.assertIn("vencida", out)
+
+    def test_shows_badge(self):
+        self.call(learn.cmd_badge_add, name="Primeira RFC lida", xp=50)
+        out = self.board()
+        self.assertIn("MARCOS", out)
+        self.assertIn("Primeira RFC lida", out)
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

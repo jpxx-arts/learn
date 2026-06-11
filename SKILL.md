@@ -179,7 +179,10 @@ O CLI faz a aritmética (XP, contadores), aplica os invariantes (cognitive load,
 
 **Invocação.** O binário vive com a skill: `~/.claude/skills/learn/bin/learn`. Rode-o a partir do diretório do projeto. Por default ele opera sobre `./learn`; com multi-domínio você **sempre** aponta o root do domínio ativo via `--root learn/<domínio>` (ex.: `learn --root learn/computing brief`). Trate `learn` como o comando (use o caminho absoluto se não estiver no PATH). O `--root` (como `--no-commit` e `--date`) é flag global e vai **antes** do subcomando.
 
-**Para se orientar, nunca leia os JSON crus** — rode `learn brief` (resumo + prioridades pedagógicas já calculadas) ou `learn show [seção]`.
+**Para se orientar, nunca leia os JSON crus.** Há três visões legíveis, cada uma com um público:
+- `learn brief` — **orientação do tutor**: prioridades pedagógicas já calculadas (tasks submetidas, weaknesses vencidas, ativos, marcos). É o que você roda ao abrir a sessão.
+- `learn board` — **painel do aluno**: dashboard formatado e bonito (nível/XP, tópicos ativos, tarefas, pontos fracos, marcos). **Aponte o aluno para `learn board` em vez de mandá-lo abrir arquivos** — ele nunca precisa ver JSON. Aceita `--plain` (sem cor).
+- `learn show [seção]` — **detalhe cru em JSON** para você inspecionar quando precisar da forma exata; não é para o aluno ler.
 
 O mapa completo **evento pedagógico → comando** está na tabela "Writes event-driven". XP é sempre concedido dentro do verbo; você nunca soma nada.
 
