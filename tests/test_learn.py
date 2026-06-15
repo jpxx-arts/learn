@@ -281,6 +281,29 @@ class TestTasks(Base):
         t = self.store.load("tasks")["tasks"][0]
         self.assertEqual(t["status"], "pending")
         self.assertEqual(t["feedback"], "faltou edge case")
+
+    def test_edit_rescopes_metadata_only(self):
+        self.add_task(title="boot", type="read", topic="boot-sequence", desc="old")
+        self.call(learn.cmd_task_edit, id=1, title=None, type="exercise",
+                  topic=None, desc="map x86 stages -> riscv")
+        t = self.store.load("tasks")["tasks"][0]
+        self.assertEqual(t["title"], "boot")            # unchanged
+        self.assertEqual(t["type"], "exercise")          # changed
+        self.assertEqual(t["topic"], "boot-sequence")    # unchanged
+        self.assertEqual(t["description"], "map x86 stages -> riscv")
+        self.assertEqual(t["status"], "pending")         # lifecycle untouched
+        self.assertEqual(self.xp(), 0)                   # no XP for an edit
+
+    def test_edit_no_fields_dies(self):
+        self.add_task()
+        self.assertEqual(
+            self.call_fail(learn.cmd_task_edit, id=1,
+                           title=None, type=None, topic=None, desc=None), 1)
+
+    def test_edit_unknown_dies(self):
+        self.assertEqual(
+            self.call_fail(learn.cmd_task_edit, id=99,
+                           title="x", type=None, topic=None, desc=None), 1)
         self.assertEqual(self.xp(), 0)
 
     def test_accept_unknown_dies(self):

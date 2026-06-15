@@ -561,6 +561,26 @@ def cmd_task_reject(store, args):
     store.commit(t.get("topic") or "learn", f"task #{args.id} rejected")
 
 
+def cmd_task_edit(store, args):
+    # Reescopo de uma task: edita só metadados (título/tipo/tópico/descrição).
+    # Nunca toca status/feedback/assigned/id — sem XP, sem mudança de lifecycle.
+    tasks = store.load("tasks")
+    t = _get_task(tasks, args.id)
+    changed = []
+    if args.title is not None:
+        t["title"] = args.title; changed.append("title")
+    if args.type is not None:
+        t["type"] = args.type; changed.append("type")
+    if args.topic is not None:
+        t["topic"] = args.topic; changed.append("topic")
+    if args.desc is not None:
+        t["description"] = args.desc; changed.append("description")
+    if not changed:
+        die("task edit: forneça ao menos um campo (--title/--type/--topic/--desc).")
+    store.save("tasks", tasks)
+    ok(f"task #{args.id} '{t['title']}' editada ({', '.join(changed)}).")
+
+
 # ---------- progresso ----------
 
 def cmd_level_set(store, args):
@@ -671,6 +691,9 @@ def build_parser():
     a.add_argument("--feedback"); a.set_defaults(fn=cmd_task_accept); _add_commit_args(a)
     a = pk.add_parser("reject"); a.add_argument("id", type=int)
     a.add_argument("--feedback", required=True); a.set_defaults(fn=cmd_task_reject); _add_commit_args(a)
+    a = pk.add_parser("edit"); a.add_argument("id", type=int)
+    a.add_argument("--title"); a.add_argument("--type", choices=["exercise", "read", "build"])
+    a.add_argument("--topic"); a.add_argument("--desc"); a.set_defaults(fn=cmd_task_edit)
 
     # level / badge / recap
     a = sub.add_parser("level").add_subparsers(dest="action", required=True).add_parser("set")

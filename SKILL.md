@@ -383,6 +383,7 @@ Persista estado no momento em que o evento acontece, não em ritual de fechament
 | Weakness resolvida | `learn weakness resolve <id>` | `resolved`, `last_revisited = hoje`; +25 XP |
 | Weakness revisitada sem resolver | `learn weakness touch <id>` | zera `concepts_since_last_touch` |
 | Atribuir / submeter / corrigir task | `learn task add\|submit\|accept\|reject <id> […]` | muda status; `accept` +15 XP; `reject` exige `--feedback` e volta a `pending` |
+| Reescopo de task (sem mudar status) | `learn task edit <id> [--title …] [--type …] [--topic …] [--desc …]` | edita só metadados; não toca status/feedback/XP |
 | Reavaliar nível da trilha | `learn level set <track> <1-10> --because "evidência"` | grava nível + evidência (recusa sem `--because`) |
 | Marco postural observado | `learn badge add --name "…" --xp N` | append badge; +N XP |
 | Recap de fim de sessão | `learn recap --clear … --foggy … --surprise …` | append em `sessions.jsonl` |
