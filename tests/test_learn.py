@@ -309,6 +309,33 @@ class TestTasks(Base):
     def test_accept_unknown_dies(self):
         self.assertEqual(self.call_fail(learn.cmd_task_accept, id=42, feedback=""), 1)
 
+    def test_show_renders_open_tasks(self):
+        self.add_task(title="walker", desc="desc 1")
+        self.add_task(title="runner", desc="desc 2")
+        out = self.call(learn.cmd_task_show, id=[], all=False, out=None)
+        self.assertIn("walker", out)
+        self.assertIn("runner", out)
+        self.assertIn("desc 1", out)
+
+    def test_show_specific_task(self):
+        self.add_task(title="walker", desc="desc 1")
+        self.add_task(title="runner", desc="desc 2")
+        out = self.call(learn.cmd_task_show, id=[2], all=False, out=None)
+        self.assertNotIn("walker", out)
+        self.assertIn("runner", out)
+
+    def test_show_unknown_task_dies(self):
+        self.assertEqual(self.call_fail(learn.cmd_task_show, id=[99], all=False, out=None), 1)
+
+    def test_show_writes_to_out_file(self):
+        self.add_task(title="walker", desc="desc 1")
+        outfile = self.tmp / "tasks_export.md"
+        out = self.call(learn.cmd_task_show, id=[], all=False, out=str(outfile))
+        self.assertTrue(outfile.exists())
+        content = outfile.read_text(encoding="utf-8")
+        self.assertIn("walker", content)
+
+
 
 class TestProgress(Base):
     def test_level_set_records_name_and_evidence(self):

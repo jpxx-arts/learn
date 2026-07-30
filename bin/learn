@@ -3,8 +3,9 @@
 
 Princípio: o LLM decide o evento pedagógico; este CLI o registra com validação.
 O tutor nunca edita o JSON na mão, nunca soma XP, nunca incrementa contador.
-Fonte da verdade: learn/state/*.json. Leitura humana: `learn show` / `learn brief`
-renderizam na hora (nunca há markdown persistido que possa ficar stale).
+Fonte da verdade: learn/state/*.json. Leitura humana: `learn brief` / `learn board` /
+`learn task show` renderizam na hora. A única escrita de markdown é `task show --out`,
+explícita e descartável — carrega a data de geração e nunca é lida de volta pelo CLI.
 """
 
 import argparse
@@ -12,6 +13,7 @@ import json
 import os
 import subprocess
 import sys
+import textwrap
 from datetime import date
 from pathlib import Path
 
@@ -581,6 +583,74 @@ def cmd_task_edit(store, args):
     ok(f"task #{args.id} '{t['title']}' editada ({', '.join(changed)}).")
 
 
+def _md_wrap(text, width=88):
+    """Quebra prosa longa em linhas de ~width colunas, preservando parágrafos.
+
+    Markdown funde linhas consecutivas num mesmo parágrafo, então o texto lê bem
+    tanto cru (num editor sem soft-wrap) quanto renderizado no preview."""
+    out = []
+    for para in (text or "").split("\n"):
+        para = para.strip()
+        if not para:
+            out.append("")
+            continue
+        out.extend(textwrap.wrap(para, width=width) or [""])
+    return "\n".join(out).strip()
+
+
+def cmd_task_show(store, args):
+    """Renderiza tarefas como markdown legível — stdout por default, arquivo com --out.
+
+    Existe porque a descrição de uma task é longa demais para o `board` (que só
+    mostra o título) e ler o JSON cru no editor é hostil: uma linha só, sem quebra.
+    Sem argumentos mostra as tarefas em aberto (pendentes + submetidas)."""
+    tasks = store.load("tasks").get("tasks", [])
+    if args.id:
+        wanted = set(args.id)
+        sel = [t for t in tasks if t["id"] in wanted]
+        missing = wanted - {t["id"] for t in sel}
+        if missing:
+            die(f"task inexistente: {', '.join(str(i) for i in sorted(missing))}")
+    elif args.all:
+        sel = tasks
+    else:
+        sel = [t for t in tasks if t["status"] != "accepted"]
+
+    lines = [
+        f"# Tarefas · {store.root.name}",
+        "",
+        f"*Gerado por `learn task show` em {today()}. Cópia descartável — "
+        f"regenere em vez de editar, o estado real vive em `state/tasks.json`.*",
+        "",
+    ]
+    if not sel:
+        lines += ["Nenhuma tarefa em aberto.", ""]
+    for t in sel:
+        lines += [
+            f"## {TASK_GLYPH.get(t['status'], '○')} #{t['id']} — {t['title']}",
+            "",
+            f"`{t['status']}` · tipo **{t['type']}** · tópico **{t['topic']}** "
+            f"· atribuída em {t['assigned']}",
+            "",
+            "### Descrição",
+            "",
+            _md_wrap(t.get("description")) or "*(vazia)*",
+            "",
+        ]
+        if t.get("feedback"):
+            lines += ["### Feedback", "", _md_wrap(t["feedback"]), ""]
+    text = "\n".join(lines).rstrip() + "\n"
+
+    if args.out:
+        p = Path(args.out)
+        if p.parent != Path(""):
+            p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_text(text, encoding="utf-8")
+        ok(f"{len(sel)} tarefa(s) escrita(s) em {p}")
+    else:
+        sys.stdout.write(text)
+
+
 # ---------- progresso ----------
 
 def cmd_level_set(store, args):
@@ -694,6 +764,11 @@ def build_parser():
     a = pk.add_parser("edit"); a.add_argument("id", type=int)
     a.add_argument("--title"); a.add_argument("--type", choices=["exercise", "read", "build"])
     a.add_argument("--topic"); a.add_argument("--desc"); a.set_defaults(fn=cmd_task_edit)
+    a = pk.add_parser("show", help="renderiza tarefas como markdown legível")
+    a.add_argument("id", type=int, nargs="*", help="ids (default: as em aberto)")
+    a.add_argument("--all", action="store_true", help="inclui as já aceitas")
+    a.add_argument("--out", help="escreve num arquivo em vez de stdout")
+    a.set_defaults(fn=cmd_task_show)
 
     # level / badge / recap
     a = sub.add_parser("level").add_subparsers(dest="action", required=True).add_parser("set")
