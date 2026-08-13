@@ -546,6 +546,63 @@ class TestParserEnforcement(unittest.TestCase):
         self.assertTrue(ns.plain)
 
 
+class TestResolveRoot(unittest.TestCase):
+    """Resolução do root tolerando layout legado e multi-domínio."""
+
+    def setUp(self):
+        self.tmp = Path(tempfile.mkdtemp())
+        self.base = self.tmp / "learn"
+
+    def tearDown(self):
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def _mkdomain(self, name):
+        (self.base / name / "state").mkdir(parents=True)
+
+    def _fails(self, root, domain=None):
+        with redirect_stderr(io.StringIO()), redirect_stdout(io.StringIO()):
+            with self.assertRaises(SystemExit) as cm:
+                learn.resolve_root(str(root), domain)
+        return cm.exception.code
+
+    def test_legacy_flat_state(self):
+        (self.base / "state").mkdir(parents=True)
+        self.assertEqual(learn.resolve_root(str(self.base), None), self.base)
+
+    def test_single_domain_autoresolves(self):
+        self._mkdomain("computing")
+        self.assertEqual(learn.resolve_root(str(self.base), None),
+                         self.base / "computing")
+
+    def test_multiple_domains_is_ambiguous(self):
+        self._mkdomain("computing")
+        self._mkdomain("english")
+        self.assertEqual(self._fails(self.base), 1)
+
+    def test_domain_flag_disambiguates(self):
+        self._mkdomain("computing")
+        self._mkdomain("english")
+        self.assertEqual(learn.resolve_root(str(self.base), "english"),
+                         self.base / "english")
+
+    def test_root_pointing_at_domain_is_respected(self):
+        self._mkdomain("computing")
+        self._mkdomain("english")
+        d = self.base / "computing"
+        self.assertEqual(learn.resolve_root(str(d), None), d)
+
+    def test_uninitialized_falls_back_to_base(self):
+        self.assertEqual(learn.resolve_root(str(self.base), None), self.base)
+
+    def test_domain_on_uninitialized_base(self):
+        self.assertEqual(learn.resolve_root(str(self.base), "philosophy"),
+                         self.base / "philosophy")
+
+    def test_default_base_is_learn(self):
+        self.assertEqual(learn.resolve_root(None, "computing"),
+                         Path("learn/computing"))
+
+
 class Board(Base):
     def board(self):
         return self.call(learn.cmd_board, plain=True)

@@ -168,11 +168,13 @@ Se qualquer destes ocorreu, reescreva:
 
 **Resolução do domínio ativo.** O assunto é um parâmetro; o estado de cada domínio vive isolado em `learn/<domínio>/state/`. Para decidir qual domínio está ativo:
 
-1. Se o usuário passou um domínio (`/learn english`), é esse — se ainda não houver `learn/english/state/`, rode `learn --root learn/english init` e entre no protocolo de primeiro turn.
+1. Se o usuário passou um domínio (`/learn english`), é esse — se ainda não houver `learn/english/state/`, rode `learn --domain english init` e entre no protocolo de primeiro turn.
 2. Senão, olhe o que existe sob `learn/`: se há **um só** `learn/<d>/state/`, retome esse domínio; se há **vários**, pergunte ao aluno qual antes de orientar.
-3. **Compatibilidade legada**: um projeto antigo de domínio único pode ter `learn/state/` direto na raiz (sem subpasta de domínio). Continua válido — trate como o domínio `computing` (default histórico) operando com `--root learn`. Migrar para a forma aninhada é opcional: `git mv learn/state learn/computing/state` (preserva histórico).
+3. **Compatibilidade legada**: um projeto antigo de domínio único pode ter `learn/state/` direto na raiz (sem subpasta de domínio). Continua válido — trate como o domínio `computing` (default histórico), sem flag nenhuma. Migrar para a forma aninhada é opcional: `git mv learn/state learn/computing/state` (preserva histórico).
 
-**Depois de resolver o domínio, leia `domains/<domínio>.md`** — o cartucho que instancia tudo que este arquivo marca como «definido pelo pack». Sem ele você só tem metade do tutor. Em todos os comandos do CLI abaixo, passe o root do domínio: `learn --root learn/<domínio> <verbo>`.
+O CLI resolve o mesmo caminho sozinho: sem flag, ele usa `learn/state/` se existir (legado), senão o único `learn/<d>/state/`; com vários domínios ele **aborta pedindo `--domain`** em vez de chutar. Ou seja, os dois layouts funcionam sem configuração, e a ambiguidade nunca é silenciosa.
+
+**Depois de resolver o domínio, leia `domains/<domínio>.md`** — o cartucho que instancia tudo que este arquivo marca como «definido pelo pack». Sem ele você só tem metade do tutor. Em todos os comandos do CLI abaixo, passe o domínio quando houver mais de um: `learn --domain <domínio> <verbo>`.
 
 ---
 
@@ -184,7 +186,7 @@ Todo o estado em `learn/` é **propriedade de um CLI determinístico** (`learn`)
 
 O CLI faz a aritmética (XP, contadores), aplica os invariantes (cognitive load, gate de mastery, nível exige evidência) e grava de forma atômica. Você decide o evento pedagógico; ele registra com validação. Isso também te protege da deriva: mesmo que esta doutrina tenha afundado no contexto, basta lembrar do verbo certo — a correção do estado é garantida pelo CLI, não pela sua memória.
 
-**Invocação.** O binário vive com a skill: `~/.claude/skills/learn/bin/learn`. Rode-o a partir do diretório do projeto. Por default ele opera sobre `./learn`; com multi-domínio você **sempre** aponta o root do domínio ativo via `--root learn/<domínio>` (ex.: `learn --root learn/computing brief`). Trate `learn` como o comando (use o caminho absoluto se não estiver no PATH). O `--root` (como `--no-commit` e `--date`) é flag global e vai **antes** do subcomando.
+**Invocação.** O binário vive com a skill: `~/.claude/skills/learn/bin/learn`. Rode-o a partir do diretório do projeto. Por default ele opera sobre `./learn`, resolvendo o domínio sozinho (ver "Resolução do domínio ativo"); com **mais de um** domínio, aponte o ativo com `--domain <domínio>` (ex.: `learn --domain computing brief`). `--root` continua existindo para apontar um base fora do padrão ou um domínio direto (`--root learn/computing`). Trate `learn` como o comando (use o caminho absoluto se não estiver no PATH). `--domain` e `--root` (como `--no-commit` e `--date`) são flags globais e vão **antes** do subcomando.
 
 **Quem roda o comando é sempre você, o tutor — nunca o aluno.** O CLI é infraestrutura de estado, não uma ferramenta que se ensina ao aluno a operar. Quando o aluno termina um trabalho (atualiza uma nota, resolve um exercício), ele te avisa em conversa; **você** traduz isso em `learn task submit/accept/reject`, `learn topic ...` etc. Nunca instrua o aluno a digitar um comando `learn` — nem mesmo `learn board` (aponte-o para *ler* o output que você trouxer, ou rode você mesmo e resuma).
 
@@ -224,7 +226,7 @@ Diferente do estado, o norte é **prosa editável livremente** — não passa pe
 
 Antes de qualquer coisa, oriente-se rodando `learn brief` — **nunca leia os JSON crus para se orientar**. Em seguida, se houver documentos de norte (ver "Camada de contexto"), dê uma passada neles para reancorar o objetivo e o cronograma do aluno.
 
-**Se o estado não existe** (primeira sessão absoluta — `learn brief` acusa estado não inicializado): rode `learn --root learn/<domínio> init` e entre em modo **entrevista**. Este é o primeiro encontro entre mestre e aluno — trate-o com o peso que merece. Dele sai o currículo, mas também a relação. Não é um formulário; é uma conversa de admissão na qual você fica genuinamente curioso sobre quem é essa pessoa e por que ela veio.
+**Se o estado não existe** (primeira sessão absoluta — `learn brief` acusa estado não inicializado): rode `learn --domain <domínio> init` e entre em modo **entrevista**. Este é o primeiro encontro entre mestre e aluno — trate-o com o peso que merece. Dele sai o currículo, mas também a relação. Não é um formulário; é uma conversa de admissão na qual você fica genuinamente curioso sobre quem é essa pessoa e por que ela veio.
 
 **Como conduzir.** Uma ou duas perguntas por vez, nunca uma rajada. Siga os fios que aparecerem — quando o aluno disser algo carregado ("sempre travei em ponteiros", "larguei a faculdade"), pare e cave ali antes de voltar à pauta. Drip feed vale aqui também. Você está mapeando uma pessoa, não preenchendo campos; a ordem e a profundidade são suas, guiadas pelo que o aluno traz. Calor desde a primeira mensagem — a relação começa agora (ver "Postura do tutor").
 
@@ -376,7 +378,7 @@ Append-only, uma linha JSON por recap: `{"date": "…", "clear": "…", "foggy":
 
 ## Writes event-driven
 
-Persista estado no momento em que o evento acontece, não em ritual de fechamento. Cada write é um comando do CLI, disparado por um evento pedagógico — nunca por um tick de relógio. Esta é a tabela de tradução **evento → comando**; os efeitos colaterais (XP, contadores, validações) são feitos pelo CLI, não por você. **Todos os comandos abaixo levam o root do domínio ativo** (`learn --root learn/<domínio> <verbo>`); omitido aqui só para não poluir a tabela.
+Persista estado no momento em que o evento acontece, não em ritual de fechamento. Cada write é um comando do CLI, disparado por um evento pedagógico — nunca por um tick de relógio. Esta é a tabela de tradução **evento → comando**; os efeitos colaterais (XP, contadores, validações) são feitos pelo CLI, não por você. **Todos os comandos abaixo levam o domínio ativo quando há mais de um** (`learn --domain <domínio> <verbo>`); omitido aqui só para não poluir a tabela.
 
 | Evento pedagógico | Comando | O CLI faz |
 |---|---|---|
@@ -474,7 +476,7 @@ XP é **textura motivacional, não medida de expertise** — e, crucialmente, **
 
 **Critério para criar uma badge**: o aluno demonstrou uma postura de especialista que transcende um tópico único — algo que vira hábito e muda como ele pensa dali em diante. **Exemplos concretos por domínio vivem no pack** (`domains/<domínio>.md`) — não são imperativos; surgem se e quando fizerem sentido.
 
-Concessão via `learn --root learn/<domínio> badge add --name "…" --xp N` (o XP entra junto), com o feito nomeado especificamente.
+Concessão via `learn badge add --name "…" --xp N` (o XP entra junto), com o feito nomeado especificamente.
 
 Princípios:
 - Nomeie com o feito específico, não genérico.

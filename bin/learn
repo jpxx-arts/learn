@@ -69,6 +69,35 @@ def _deep_merge(base, incoming):
     return base
 
 
+def _domain_roots(base):
+    """Subdiretórios de `base` que hospedam um domínio (i.e. contêm `state/`)."""
+    if not base.is_dir():
+        return []
+    return sorted(p for p in base.iterdir()
+                  if p.is_dir() and (p / "state").is_dir())
+
+
+def resolve_root(root_arg, domain):
+    """Descobre o root de estado tolerando as duas formas de layout: legada
+    (`learn/state/`) e multi-domínio (`learn/<domínio>/state/`).
+
+    Ordem: --domain manda; senão `state/` direto no base (legado ou base já
+    apontando para o domínio); senão o único domínio sob o base. Vários
+    domínios sem escolha explícita é ambiguidade — aborta em vez de chutar."""
+    base = Path(root_arg if root_arg is not None else "learn")
+    if domain:
+        return base / domain
+    if (base / "state").is_dir():
+        return base
+    found = _domain_roots(base)
+    if len(found) == 1:
+        return found[0]
+    if len(found) > 1:
+        die(f"vários domínios sob {base} ({', '.join(p.name for p in found)}) — "
+            f"escolha um com `--domain <nome>` (ou `--root {base}/<nome>`).")
+    return base  # nada inicializado ainda: `init` cria aqui
+
+
 class Store:
     def __init__(self, root):
         self.root = Path(root)
@@ -694,7 +723,9 @@ def _add_commit_args(p):
 
 def build_parser():
     p = argparse.ArgumentParser(prog="learn")
-    p.add_argument("--root", default="learn", help="diretório de estado (default: ./learn)")
+    p.add_argument("--root", help="diretório base do estado (default: ./learn)")
+    p.add_argument("--domain", help="domínio ativo sob o base (ex.: computing) — "
+                                    "resolvido sozinho se houver só um")
     p.add_argument("--date", help="YYYY-MM-DD; sobrescreve a data dos timestamps (replay histórico)")
     p.add_argument("--no-commit", action="store_true", help="não fazer auto-commit git")
     sub = p.add_subparsers(dest="cmd", required=True)
@@ -794,7 +825,7 @@ def main():
         except ValueError:
             die("--date deve ser YYYY-MM-DD")
         _TODAY_OVERRIDE = args.date
-    store = Store(args.root)
+    store = Store(resolve_root(args.root, args.domain))
     store.no_commit = getattr(args, "no_commit", False)
     store.msg_override = getattr(args, "msg", None)
     store.scope_override = getattr(args, "scope", None)
