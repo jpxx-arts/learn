@@ -93,6 +93,6 @@ Badges são dinâmicas e nomeadas com o feito específico (ver mecânica no núc
 Sintaxe (XP proporcional ao esforço postural):
 
 ```
-learn --root learn/computing badge add --name "Primeira leitura completa da RFC 8446 (TLS 1.3)" --xp 50
-learn --root learn/computing badge add --name "Primeiro allocator custom em C, livre de fragmentação em benchmarks" --xp 80
+learn --root learn/tls badge add --name "Primeira leitura completa da RFC 8446 (TLS 1.3)" --xp 50
+learn --root learn/allocators badge add --name "Primeiro allocator custom em C, livre de fragmentação em benchmarks" --xp 80
 ```

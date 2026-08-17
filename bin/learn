@@ -69,32 +69,32 @@ def _deep_merge(base, incoming):
     return base
 
 
-def _domain_roots(base):
-    """Subdiretórios de `base` que hospedam um domínio (i.e. contêm `state/`)."""
+def _content_roots(base):
+    """Subdiretórios de `base` que hospedam um conteúdo (i.e. contêm `state/`)."""
     if not base.is_dir():
         return []
     return sorted(p for p in base.iterdir()
                   if p.is_dir() and (p / "state").is_dir())
 
 
-def resolve_root(root_arg, domain):
+def resolve_root(root_arg, content):
     """Descobre o root de estado tolerando as duas formas de layout: legada
-    (`learn/state/`) e multi-domínio (`learn/<domínio>/state/`).
+    (`learn/state/`) e multi-conteúdo (`learn/<conteúdo>/state/`).
 
-    Ordem: --domain manda; senão `state/` direto no base (legado ou base já
-    apontando para o domínio); senão o único domínio sob o base. Vários
-    domínios sem escolha explícita é ambiguidade — aborta em vez de chutar."""
+    Ordem: --content manda; senão `state/` direto no base (legado ou base já
+    apontando para o conteúdo); senão o único conteúdo sob o base. Vários
+    conteúdos sem escolha explícita são ambíguos — aborta em vez de chutar."""
     base = Path(root_arg if root_arg is not None else "learn")
-    if domain:
-        return base / domain
+    if content:
+        return base / content
     if (base / "state").is_dir():
         return base
-    found = _domain_roots(base)
+    found = _content_roots(base)
     if len(found) == 1:
         return found[0]
     if len(found) > 1:
-        die(f"vários domínios sob {base} ({', '.join(p.name for p in found)}) — "
-            f"escolha um com `--domain <nome>` (ou `--root {base}/<nome>`).")
+        die(f"vários conteúdos sob {base} ({', '.join(p.name for p in found)}) — "
+            f"escolha um com `--content <nome>` (ou `--root {base}/<nome>`).")
     return base  # nada inicializado ainda: `init` cria aqui
 
 
@@ -254,7 +254,7 @@ def cmd_board(store, args):
     tasks = store.load("tasks")
     prog = store.load("progress")
 
-    domain = store.root.name
+    content = store.root.name
     handle = prof.get("handle") or "—"
     track = (prof.get("technical") or {}).get("primary_track") or "—"
 
@@ -263,7 +263,7 @@ def cmd_board(store, args):
     lvl_str = "  ".join(f"{trk} {lv['n']} ({lv['name']})" for trk, lv in levels.items()) \
         or "sem nível avaliado"
     xp = prog.get("xp", {}).get("total", 0)
-    ok(s(f"  LEARN · {domain}", "b", "cyn") + s(f"   {handle} · trilha {track}", "dim"))
+    ok(s(f"  LEARN · {content}", "b", "cyn") + s(f"   {handle} · trilha {track}", "dim"))
     ok(s(f"  {lvl_str}   ·   {xp} XP", "gry"))
 
     # tópicos
@@ -724,8 +724,8 @@ def _add_commit_args(p):
 def build_parser():
     p = argparse.ArgumentParser(prog="learn")
     p.add_argument("--root", help="diretório base do estado (default: ./learn)")
-    p.add_argument("--domain", help="domínio ativo sob o base (ex.: computing) — "
-                                    "resolvido sozinho se houver só um")
+    p.add_argument("--content", help="conteúdo ativo sob o base (ex.: risc-v) — "
+                                     "resolvido sozinho se houver só um")
     p.add_argument("--date", help="YYYY-MM-DD; sobrescreve a data dos timestamps (replay histórico)")
     p.add_argument("--no-commit", action="store_true", help="não fazer auto-commit git")
     sub = p.add_subparsers(dest="cmd", required=True)
@@ -825,7 +825,7 @@ def main():
         except ValueError:
             die("--date deve ser YYYY-MM-DD")
         _TODAY_OVERRIDE = args.date
-    store = Store(resolve_root(args.root, args.domain))
+    store = Store(resolve_root(args.root, args.content))
     store.no_commit = getattr(args, "no_commit", False)
     store.msg_override = getattr(args, "msg", None)
     store.scope_override = getattr(args, "scope", None)

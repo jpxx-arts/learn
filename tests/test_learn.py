@@ -547,7 +547,7 @@ class TestParserEnforcement(unittest.TestCase):
 
 
 class TestResolveRoot(unittest.TestCase):
-    """Resolução do root tolerando layout legado e multi-domínio."""
+    """Resolução do root tolerando layout legado e multi-conteúdo."""
 
     def setUp(self):
         self.tmp = Path(tempfile.mkdtemp())
@@ -556,51 +556,55 @@ class TestResolveRoot(unittest.TestCase):
     def tearDown(self):
         shutil.rmtree(self.tmp, ignore_errors=True)
 
-    def _mkdomain(self, name):
+    def _mkcontent(self, name):
         (self.base / name / "state").mkdir(parents=True)
 
-    def _fails(self, root, domain=None):
+    def _fails(self, root, content=None):
         with redirect_stderr(io.StringIO()), redirect_stdout(io.StringIO()):
             with self.assertRaises(SystemExit) as cm:
-                learn.resolve_root(str(root), domain)
+                learn.resolve_root(str(root), content)
         return cm.exception.code
 
     def test_legacy_flat_state(self):
         (self.base / "state").mkdir(parents=True)
         self.assertEqual(learn.resolve_root(str(self.base), None), self.base)
 
-    def test_single_domain_autoresolves(self):
-        self._mkdomain("computing")
+    def test_single_content_autoresolves(self):
+        self._mkcontent("risc-v")
         self.assertEqual(learn.resolve_root(str(self.base), None),
-                         self.base / "computing")
+                         self.base / "risc-v")
 
-    def test_multiple_domains_is_ambiguous(self):
-        self._mkdomain("computing")
-        self._mkdomain("english")
+    def test_multiple_contents_are_ambiguous(self):
+        self._mkcontent("risc-v")
+        self._mkcontent("essay-writing")
         self.assertEqual(self._fails(self.base), 1)
 
-    def test_domain_flag_disambiguates(self):
-        self._mkdomain("computing")
-        self._mkdomain("english")
-        self.assertEqual(learn.resolve_root(str(self.base), "english"),
-                         self.base / "english")
+    def test_content_flag_disambiguates(self):
+        self._mkcontent("risc-v")
+        self._mkcontent("essay-writing")
+        self.assertEqual(learn.resolve_root(str(self.base), "essay-writing"),
+                         self.base / "essay-writing")
 
-    def test_root_pointing_at_domain_is_respected(self):
-        self._mkdomain("computing")
-        self._mkdomain("english")
-        d = self.base / "computing"
-        self.assertEqual(learn.resolve_root(str(d), None), d)
+    def test_root_pointing_at_content_is_respected(self):
+        self._mkcontent("risc-v")
+        self._mkcontent("essay-writing")
+        content = self.base / "risc-v"
+        self.assertEqual(learn.resolve_root(str(content), None), content)
 
     def test_uninitialized_falls_back_to_base(self):
         self.assertEqual(learn.resolve_root(str(self.base), None), self.base)
 
-    def test_domain_on_uninitialized_base(self):
-        self.assertEqual(learn.resolve_root(str(self.base), "philosophy"),
-                         self.base / "philosophy")
+    def test_content_on_uninitialized_base(self):
+        self.assertEqual(learn.resolve_root(str(self.base), "risc-v"),
+                         self.base / "risc-v")
 
     def test_default_base_is_learn(self):
-        self.assertEqual(learn.resolve_root(None, "computing"),
-                         Path("learn/computing"))
+        self.assertEqual(learn.resolve_root(None, "risc-v"),
+                         Path("learn/risc-v"))
+
+    def test_parser_accepts_content_flag(self):
+        ns = learn.build_parser().parse_args(["--content", "risc-v", "brief"])
+        self.assertEqual(ns.content, "risc-v")
 
 
 class Board(Base):
