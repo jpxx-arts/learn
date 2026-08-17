@@ -107,6 +107,6 @@ Badges são dinâmicas e nomeadas com o feito específico (ver mecânica no núc
 Sintaxe (XP proporcional ao esforço postural):
 
 ```
-learn --root learn/orwell badge add --name "Primeira leitura de 'Politics and the English Language' (Orwell) sem dicionário" --xp 50
-learn --root learn/essay-writing badge add --name "Primeiro ensaio de 800 palavras escrito do zero, sem tradutor" --xp 70
+learn badge add --name "Primeira leitura de 'Politics and the English Language' (Orwell) sem dicionário" --xp 50
+learn badge add --name "Primeiro ensaio de 800 palavras escrito do zero, sem tradutor" --xp 70
 ```

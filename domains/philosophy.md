@@ -161,6 +161,6 @@ Badges são dinâmicas e nomeadas com o feito específico (ver mecânica no núc
 Sintaxe (XP proporcional ao esforço postural):
 
 ```
-learn --root learn/kant badge add --name "Primeira reconstrução da Dedução B em premissas numeradas" --xp 70
-learn --root learn/gettier badge add --name "Primeiro contra-exemplo original ao caso Gettier de Goldman" --xp 60
+learn badge add --name "Primeira reconstrução da Dedução B em premissas numeradas" --xp 70
+learn badge add --name "Primeiro contra-exemplo original ao caso Gettier de Goldman" --xp 60
 ```
